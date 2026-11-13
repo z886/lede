@@ -8,18 +8,19 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uhttpd
-PKG_RELEASE:=3
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/uhttpd.git
-PKG_SOURCE_DATE:=2018-11-28
-PKG_SOURCE_VERSION:=cdfc902a4cb77bc538a729f9e1c8a8578454a0e5
-PKG_MIRROR_HASH:=6b21111547a4453355bd6c941a47f0116a652a77d87c1e05a035168b8ab2aa6f
+PKG_SOURCE_DATE:=2025-10-03
+PKG_SOURCE_VERSION:=ebb92e6b339b88bbc6b76501b6603c52d4887ba1
+PKG_MIRROR_HASH:=331155667553e4ee02cc027558af62e480fd4c863bda3e2a6ec327f38b933323
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=ISC
 
+PKG_ASLR_PIE_REGULAR:=1
 PKG_BUILD_DEPENDS = ustream-ssl
-PKG_CONFIG_DEPENDS:= CONFIG_uhttpd_lua
+PKG_CONFIG_DEPENDS:= CONFIG_uhttpd_lua CONFIG_uhttpd_ucode
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -34,7 +35,7 @@ endef
 
 define Package/uhttpd
   $(Package/uhttpd/default)
-  DEPENDS:=+libubox +libblobmsg-json +libjson-script
+  DEPENDS:=+libubox +libblobmsg-json +libjson-script +libjson-c
 endef
 
 define Package/uhttpd/description
@@ -48,7 +49,19 @@ define Package/uhttpd/config
     depends on PACKAGE_uhttpd-mod-lua
     bool "Enable Integrated Lua interpreter"
 	default y
+
+  config uhttpd_ucode
+    depends on PACKAGE_uhttpd-mod-ucode
+    bool "Enable Integrated ucode interpreter"
+	default y
 endef
+
+define Package/uhttpd/conffiles
+/etc/config/uhttpd
+/etc/uhttpd.crt
+/etc/uhttpd.key
+endef
+
 
 define Package/uhttpd-mod-lua
   $(Package/uhttpd/default)
@@ -72,11 +85,17 @@ define Package/uhttpd-mod-ubus/description
  session.* namespace and procedures.
 endef
 
-define Package/uhttpd/conffiles
-/etc/config/uhttpd
-/etc/uhttpd.crt
-/etc/uhttpd.key
+
+define Package/uhttpd-mod-ucode
+  $(Package/uhttpd/default)
+  TITLE+= (ucode plugin)
+  DEPENDS:=uhttpd +libucode
 endef
+
+define Package/uhttpd-mod-ucode/description
+ The ucode plugin adds a CGI-like ucode runtime interface to uHTTPd.
+endef
+
 
 ifneq ($(CONFIG_USE_GLIBC),)
   TARGET_CFLAGS += -D_DEFAULT_SOURCE
@@ -84,7 +103,7 @@ endif
 
 TARGET_LDFLAGS += -lcrypt
 
-CMAKE_OPTIONS = -DTLS_SUPPORT=on
+CMAKE_OPTIONS += -DTLS_SUPPORT=on
 
 define Package/uhttpd/install
 	$(INSTALL_DIR) $(1)/etc/init.d
@@ -107,7 +126,13 @@ define Package/uhttpd-mod-ubus/install
 	$(INSTALL_DATA) ./files/ubus.default $(1)/etc/uci-defaults/00_uhttpd_ubus
 endef
 
+define Package/uhttpd-mod-ucode/install
+	$(INSTALL_DIR) $(1)/usr/lib
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uhttpd_ucode.so $(1)/usr/lib/
+endef
+
 
 $(eval $(call BuildPackage,uhttpd))
 $(eval $(call BuildPackage,uhttpd-mod-lua))
 $(eval $(call BuildPackage,uhttpd-mod-ubus))
+$(eval $(call BuildPackage,uhttpd-mod-ucode))

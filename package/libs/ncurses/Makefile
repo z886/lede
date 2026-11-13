@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2006-2015 OpenWrt.org
+# Copyright (C) 2006-2026 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -8,13 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ncurses
-PKG_VERSION:=6.1
+PKG_CPE_ID:=cpe:/a:gnu:ncurses
+PKG_VERSION_MAJOR:=6.6
+PKG_SNAPSHOT_DATE:=20260801
+PKG_VERSION:=$(PKG_VERSION_MAJOR)$(if $(PKG_SNAPSHOT_DATE),.$(PKG_SNAPSHOT_DATE),)
 PKG_RELEASE:=1
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=aa057eeeb4a14d470101eff4597d5833dcef5965331be3528c08d99cebaa0d17
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/ThomasDickey/ncurses-snapshots.git
+PKG_SOURCE_VERSION:=90b8a67c736ad903e73567d47779315ae586119d
+PKG_MIRROR_HASH:=deaff345e390793e71630f8d9f4f65609ab3057e1f1a51290f552eeb506edeac
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=README
@@ -31,17 +34,17 @@ define Package/terminfo
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Terminal Info Database (ncurses)
-  URL:=http://www.gnu.org/software/ncurses/
+  URL:=https://www.gnu.org/software/ncurses/
 endef
 
 define Package/libncurses
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Terminal handling library (Unicode)
-  URL:=http://www.gnu.org/software/ncurses/
+  URL:=https://www.gnu.org/software/ncurses/
   PROVIDES:=libncursesw
   DEPENDS:= +terminfo
-  ABI_VERSION:=$(PKG_VERSION)
+  ABI_VERSION:=6
 endef
 
 define Package/libncurses-dev
@@ -52,7 +55,11 @@ define Package/libncurses-dev
   TITLE:=Development files for the ncurses library
 endef
 
-TARGET_CFLAGS += $(FPIC)
+define Package/libncurses/config
+        source "$(SOURCE)/Config.in"
+endef
+
+TARGET_CFLAGS += $(FPIC) -std=gnu17
 
 CONFIGURE_ARGS += \
 	--enable-echo \
@@ -76,7 +83,13 @@ CONFIGURE_ARGS += \
 	--enable-widec \
 	--with-build-cppflags=-D_GNU_SOURCE
 
+CONFIGURE_VARS += \
+	cf_try_fPIC=no
+
+HOST_CFLAGS += $(HOST_FPIC)
+
 HOST_CONFIGURE_ARGS += \
+	--enable-pc-files \
 	--without-cxx \
 	--without-cxx-binding \
 	--without-ada \
@@ -84,7 +97,8 @@ HOST_CONFIGURE_ARGS += \
 	--without-manpages \
 	--without-profile \
 	--without-tests \
-	--without-curses-h
+	--without-curses-h \
+	--disable-db-install
 
 
 ifeq ($(HOST_OS),FreeBSD)
@@ -116,7 +130,24 @@ ifneq ($(HOST_OS),FreeBSD)
 			mv $$$$dir $$$$(echo -ne "\x$$$$dir"); \
 		done \
 	)
-	for file in a/ansi d/dumb l/linux r/rxvt r/rxvt-unicode s/screen v/vt100 v/vt102 x/xterm x/xterm-color x/xterm-256color; do \
+	for file in \
+		a/ansi \
+		a/alacritty \
+		d/dumb \
+		f/foot \
+		l/linux \
+		r/rxvt \
+		r/rxvt-unicode \
+		s/screen \
+		s/screen-256color \
+		t/tmux \
+		t/tmux-256color \
+		v/vt100 \
+		v/vt102 \
+		x/xterm \
+		x/xterm-color \
+		x/xterm-256color \
+		$(call qstrip,$(CONFIG_LIBNCURSES_TERMINFO)); do \
 		$(INSTALL_DIR) $(1)/usr/share/terminfo/`dirname $$$$file`; \
 		$(CP) $(PKG_INSTALL_DIR)/usr/share/terminfo/$$$$file \
 			$(1)/usr/share/terminfo/$$$$file; \
@@ -127,8 +158,10 @@ endef
 define Package/libncurses/install
 	$(INSTALL_DIR) $(1)/usr/lib
 	for lib in ncurses panel menu form; do \
-		$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib$$$${lib}w.so* $(1)/usr/lib/; \
-		ln -s lib$$$${lib}w.so $(1)/usr/lib/lib$$$${lib}.so; \
+		$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib$$$${lib}w.so.* $(1)/usr/lib/; \
+		for so in $(1)/usr/lib/lib$$$${lib}w.so.*; do \
+			ln -s $$$${so##*/} $$$${so%w.so*}.so$$$${so##*w.so}; \
+		done; \
 	done
 endef
 
@@ -146,7 +179,9 @@ endef
 define Build/InstallDev
 	$(CP) $(PKG_INSTALL_DIR)/* $(1)
 	for lib in ncurses panel menu form; do \
-		ln -s lib$$$${lib}w.so $(1)/usr/lib/lib$$$${lib}.so; \
+		for so in $(1)/usr/lib/lib$$$${lib}w.so*; do \
+			ln -s $$$${so##*/} $$$${so%w.so*}.so$$$${so##*w.so}; \
+		done; \
 	done
 	ln -s . $(1)/usr/include/ncursesw
 	$(TARGET_CROSS)ar rc $(1)/usr/lib/libtinfo.a
@@ -155,6 +190,8 @@ define Build/InstallDev
 	$(SED) 's,^\(prefix\|exec_prefix\)=.*,\1=$(STAGING_DIR)/usr,g' -e 's/$$$$INCS //g' \
 		$(2)/bin/ncursesw6-config
 	ln -sf $(STAGING_DIR)/host/bin/ncursesw6-config $(1)/usr/bin/ncursesw6-config
+	$(SED) 's,$(TOOLCHAIN_DIR),$(STAGING_DIR),g' \
+		$(1)/usr/lib/pkgconfig/ncursesw.pc
 endef
 
 define Host/Compile

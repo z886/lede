@@ -140,6 +140,34 @@ sub package_depends($$) {
 	return $ret;
 }
 
+sub condition_implies_dep {
+	my ($condition, $depend) = @_;
+	return 0 unless defined $condition;
+	return 1 if $condition eq $depend || $condition eq "($depend)";
+
+	my ($depth, $start) = (0, 0);
+	my @terms;
+	for (my $i = 0; $i < length($condition); $i++) {
+		my $char = substr($condition, $i, 1);
+		$depth++ if $char eq '(';
+		$depth-- if $char eq ')';
+		next if $depth;
+		my $op = substr($condition, $i, 2);
+		# A dependency in only one alternative is not implied.
+		return 0 if $op eq '||';
+		if ($op eq '&&') {
+			push @terms, substr($condition, $start, $i - $start);
+			$start = ++$i + 1;
+		}
+	}
+	push @terms, substr($condition, $start);
+	for my $term (@terms) {
+		$term =~ s/^\s+|\s+$//g;
+		return 1 if $term eq $depend || $term eq "($depend)";
+	}
+	return 0;
+}
+
 sub mconf_depends {
 	my $pkgname = shift;
 	my $depends = shift;
@@ -160,7 +188,10 @@ sub mconf_depends {
 		$depend =~ s/^([@\+]+)// and $flags = $1;
 		my $condition = $parent_condition;
 
-		next if $condition eq $depend;
+		$depend = $2 if	$depend =~ /^(.+):(.+)$/ and $dep->{$1} eq 'select';
+
+		# Do not turn a redundant conditional dependency into a Kconfig edge.
+		next if condition_implies_dep($condition, $depend);
 		next if $seen->{"$parent_condition:$depend"};
 		next if $seen->{":$depend"};
 		$seen->{"$parent_condition:$depend"} = 1;
@@ -191,9 +222,9 @@ sub mconf_depends {
 				$depend = shift @vdeps;
 
 				if (@vdeps > 1) {
-					$condition = ($condition ? "$condition && " : '') . '!('.join("||", map { "PACKAGE_".$_ } @vdeps).')';
+					$condition = ($condition ? "$condition && " : '') . join("&&", map { "PACKAGE_$_<PACKAGE_$pkgname" } @vdeps);
 				} elsif (@vdeps > 0) {
-					$condition = ($condition ? "$condition && " : '') . '!PACKAGE_'.$vdeps[0];
+					$condition = ($condition ? "$condition && " : '') . "PACKAGE_${vdeps[0]}<PACKAGE_$pkgname";
 				}
 			}
 
@@ -232,7 +263,7 @@ sub mconf_depends {
 		mconf_depends($pkgname, $tdep->[0], 1, $dep, $seen, $tdep->[1]);
 	}
 
-	foreach my $depend (keys %$dep) {
+	foreach my $depend (sort keys %$dep) {
 		my $m = $dep->{$depend};
 		$res .= "\t\t$m $depend\n";
 	}
@@ -246,6 +277,10 @@ sub mconf_conflicts {
 
 	foreach my $depend (@$depends) {
 		next unless $package{$depend};
+		my $reverse = $package{$depend}->{conflicts};
+		# One Kconfig edge is enough for a reciprocal package conflict.
+		next if $reverse && $pkgname gt $depend &&
+			grep { $_ eq $pkgname } @$reverse;
 		$res .= "\t\tdepends on m || (PACKAGE_$depend != y)\n";
 	}
 	return $res;
@@ -358,14 +393,30 @@ sub gen_package_config() {
 	print_package_overrides();
 }
 
+sub and_condition($) {
+	my $condition = shift;
+	my @spl_and = split('\&\&', $condition);
+	if (@spl_and == 1) {
+		return "\$(CONFIG_$spl_and[0])";
+	}
+	return "\$(and " . join (',', map("\$(CONFIG_$_)", @spl_and)) . ")";
+}
+
+sub gen_condition ($) {
+	my $condition = shift;
+	# remove '!()', just as include/package-ipkg.mk does
+	$condition =~ s/[()!]//g;
+	return join("", map(and_condition($_), split('\|\|', $condition)));
+}
+
 sub get_conditional_dep($$) {
 	my $condition = shift;
 	my $depstr = shift;
 	if ($condition) {
 		if ($condition =~ /^!(.+)/) {
-			return "\$(if \$(CONFIG_$1),,$depstr)";
+			return "\$(if " . gen_condition($1) . ",,$depstr)";
 		} else {
-			return "\$(if \$(CONFIG_$condition),$depstr)";
+			return "\$(if " . gen_condition($condition) . ",$depstr)";
 		}
 	} else {
 		return $depstr;
@@ -509,12 +560,24 @@ sub gen_package_source() {
 	}
 }
 
-sub gen_package_subdirs() {
+sub gen_package_auxiliary() {
 	parse_package_metadata($ARGV[0]) or exit 1;
 	foreach my $name (sort {uc($a) cmp uc($b)} keys %package) {
 		my $pkg = $package{$name};
 		if ($pkg->{name} && $pkg->{repository}) {
 			print "Package/$name/subdir = $pkg->{repository}\n";
+		}
+		my %depends;
+		foreach my $dep (@{$pkg->{depends} || []}) {
+			if ($dep =~ m!^\+?(?:[^:]+:)?([^@]+)$!) {
+				$depends{$1}++;
+			}
+		}
+		my @depends = sort keys %depends;
+		if (@depends > 0) {
+			foreach my $n (@{$pkg->{provides}}) {
+				print "Package/$n/depends = @depends\n";
+			}
 		}
 	}
 }
@@ -557,6 +620,40 @@ sub gen_usergroup_list() {
 	}
 }
 
+sub gen_package_manifest_json() {
+	my $json;
+	parse_package_metadata($ARGV[0]) or exit 1;
+	foreach my $name (sort {uc($a) cmp uc($b)} keys %package) {
+		my %depends;
+		my $pkg = $package{$name};
+		foreach my $dep (@{$pkg->{depends} || []}) {
+			if ($dep =~ m!^\+?(?:[^:]+:)?([^@]+)$!) {
+				$depends{$1}++;
+			}
+		}
+		my @depends = sort keys %depends;
+		my $pkg_deps = join ' ', map { qq/"$_",/ } @depends;
+		$pkg_deps =~ s/\,$//;
+
+		my $pkg_maintainer = join ' ', map { qq/"$_",/ } @{$pkg->{maintainer} || []};
+		$pkg_maintainer =~ s/\,$//;
+
+		$json = <<"END_JSON";
+${json}{
+"name":"$name",
+"version":"$pkg->{version}",
+"category":"$pkg->{category}",
+"license":"$pkg->{license}",
+"maintainer": [$pkg_maintainer],
+"depends":[$pkg_deps]},
+END_JSON
+	}
+
+	$json =~ s/[\n\r]//g;
+	$json =~ s/\,$//;
+	print "[$json]";
+}
+
 sub parse_command() {
 	GetOptions("ignore=s", \@ignore);
 	my $cmd = shift @ARGV;
@@ -565,7 +662,8 @@ sub parse_command() {
 		/^config$/ and return gen_package_config();
 		/^kconfig/ and return gen_kconfig_overrides();
 		/^source$/ and return gen_package_source();
-		/^subdirs$/ and return gen_package_subdirs();
+		/^pkgaux$/ and return gen_package_auxiliary();
+		/^pkgmanifestjson$/ and return gen_package_manifest_json();
 		/^license$/ and return gen_package_license(0);
 		/^licensefull$/ and return gen_package_license(1);
 		/^usergroup$/ and return gen_usergroup_list();
@@ -577,7 +675,8 @@ Available Commands:
 	$0 config [file] 			Package metadata in Kconfig format
 	$0 kconfig [file] [config] [patchver]	Kernel config overrides
 	$0 source [file] 			Package source file information
-	$0 subdirs [file]			Package subdir information in makefile format
+	$0 pkgaux [file]			Package auxiliary variables in makefile format
+	$0 pkgmanifestjson [file]		Package manifests in JSON format
 	$0 license [file] 			Package license information
 	$0 licensefull [file] 			Package license information (full list)
 	$0 usergroup [file]			Package usergroup allocation list

@@ -1,18 +1,26 @@
-# Use the default kernel version if the Makefile doesn't override it
 
+# Use the default kernel version if the Makefile doesn't override it
 LINUX_RELEASE?=1
 
 ifdef CONFIG_TESTING_KERNEL
   KERNEL_PATCHVER:=$(KERNEL_TESTING_PATCHVER)
 endif
 
-LINUX_VERSION-4.9 = .196
-LINUX_VERSION-4.14 = .149
-LINUX_VERSION-4.19 = .79
+KERNEL_DETAILS_FILE=$(INCLUDE_DIR)/kernel-$(KERNEL_PATCHVER)
+ifeq ($(wildcard $(KERNEL_DETAILS_FILE)),)
+  $(error Missing kernel version/hash file for $(KERNEL_PATCHVER). Please create $(KERNEL_DETAILS_FILE))
+endif
 
-LINUX_KERNEL_HASH-4.9.196 = e0ab12b04a975630ece2142a1ac15cfe45140b8c3359226b035c15ca7c92c6ef
-LINUX_KERNEL_HASH-4.14.149 = e69dabd2368440ce1650cda0cf043e1ba3f3343f940a43b68e761739fcb3f296
-LINUX_KERNEL_HASH-4.19.79 = f1143564364f278ba0893a7813afc02da6ecef6d5de147bd5011aa3cc1634b34
+include $(KERNEL_DETAILS_FILE)
+
+ifdef KERNEL_TESTING_PATCHVER
+  KERNEL_TESTING_DETAILS_FILE=$(INCLUDE_DIR)/kernel-$(KERNEL_TESTING_PATCHVER)
+  ifeq ($(wildcard $(KERNEL_TESTING_DETAILS_FILE)),)
+    $(error Missing kernel version/hash file for $(KERNEL_TESTING_PATCHVER). Please create $(KERNEL_TESTING_DETAILS_FILE))
+  endif
+
+  include $(KERNEL_TESTING_DETAILS_FILE)
+endif
 
 remove_uri_prefix=$(subst git://,,$(subst http://,,$(subst https://,,$(1))))
 sanitize_uri=$(call qstrip,$(subst @,_,$(subst :,_,$(subst .,_,$(subst -,_,$(subst /,_,$(1)))))))
